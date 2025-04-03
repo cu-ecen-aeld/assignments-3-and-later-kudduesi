@@ -263,6 +263,7 @@ int main(int argc, char *argv[]){
         curr = curr->next;
         free(tmp);
     }
+    pthread_cancel(ts_thread);
     pthread_join(ts_thread, NULL);
     close(socketfd);
     if(unlink(DATA_FILE) < 0)
