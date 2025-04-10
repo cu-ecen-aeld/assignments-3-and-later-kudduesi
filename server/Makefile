@@ -1,6 +1,6 @@
 CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Werror -g
-LDFLAGS ?= -lphtread -lrt
+LDFLAGS ?=
 TARGET ?= aesdsocket
 SRC ?= aesdsocket.c
 OBJ ?= $(SRC:.c=.o)
