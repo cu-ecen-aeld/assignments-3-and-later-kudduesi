@@ -12,10 +12,23 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>   
 
 #define PORT 9000
 #define BUF_SIZE 1024
 #define DATA_FILE "/var/tmp/aesdsocketdata"
+
+
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+
+#if USE_AESD_CHAR_DEVICE
+#define STORAGE_PATH "/dev/aesdchar"
+#else
+#define STORAGE_PATH DATA_FILE
+#endif
 
 volatile sig_atomic_t stop_server = 0;
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -31,9 +44,10 @@ int write_client_data(int client_fd){
     ssize_t num_bytes;
     int file_fd;
 
-    file_fd = open(DATA_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    
+    file_fd = open(STORAGE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if(file_fd < 0){
-        syslog(LOG_ERR, "Failed to open %s: %s", DATA_FILE, strerror(errno));
+        syslog(LOG_ERR, "Failed to open %s: %s", STORAGE_PATH, strerror(errno));
         return -1;
     }
 
@@ -77,9 +91,10 @@ int write_client_data(int client_fd){
 }
 
 int read_client_data(int client_fd){
-    int read_fd = open(DATA_FILE, O_RDONLY);
+    
+    int read_fd = open(STORAGE_PATH, O_RDONLY);
     if(read_fd < 0){
-        syslog(LOG_ERR, "Failed to open %s for reading: %s", DATA_FILE, strerror(errno));
+        syslog(LOG_ERR, "Failed to open %s for reading: %s", STORAGE_PATH, strerror(errno));
         return -1;
     }
     char send_buf[BUF_SIZE];
@@ -125,7 +140,7 @@ void add_thread_info(struct thread_info *node){
 }
 
 void *thread_func(void *arg){
-    struct thread_info *tinfo =(struct thread_info *)arg;
+    struct thread_info *tinfo = (struct thread_info *)arg;
     pthread_mutex_lock(&file_mutex);
     handle_client_data(tinfo->client_fd);
     pthread_mutex_unlock(&file_mutex);
@@ -133,6 +148,8 @@ void *thread_func(void *arg){
     return arg;
 }
 
+
+#if !USE_AESD_CHAR_DEVICE
 void *timestamp_thread(void *arg){
     char ts_buf[256];
     while(!stop_server){
@@ -154,15 +171,18 @@ void *timestamp_thread(void *arg){
     }
     return NULL;
 }
+#endif
 
 int main(int argc, char *argv[]){
     bool daemon_mode = false;
     if(argc > 1 && strcmp(argv[1], "-d") == 0)
         daemon_mode = true;
+
     struct sockaddr_in server, client;
     int socketfd, acceptfd;
     socklen_t client_len;
     struct sigaction sa;
+
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sa.sa_flags = 0;
@@ -174,7 +194,9 @@ int main(int argc, char *argv[]){
         perror("sigaction(SIGTERM) failed"); 
         exit(EXIT_FAILURE);
     }
+
     openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
+
     socketfd = socket(AF_INET, SOCK_STREAM, 0);
     if(socketfd < 0){ 
         syslog(LOG_ERR, "Error creating socket: %s", strerror(errno)); 
@@ -221,13 +243,16 @@ int main(int argc, char *argv[]){
         close(STDERR_FILENO);
     }
 
+
+#if !USE_AESD_CHAR_DEVICE
     pthread_t ts_thread;
     if(pthread_create(&ts_thread, NULL, timestamp_thread, NULL) != 0){
         syslog(LOG_ERR, "Failed to create timestamp thread: %s", strerror(errno));
         close(socketfd);
         return -1;
     }
-    
+#endif
+
     while(!stop_server){
         client_len = sizeof(client);
         acceptfd = accept(socketfd,(struct sockaddr *)&client, &client_len);
@@ -256,6 +281,7 @@ int main(int argc, char *argv[]){
         add_thread_info(node);
         syslog(LOG_INFO, "Spawned thread for connection from %s", inet_ntoa(client.sin_addr));
     }
+
     struct thread_info *curr = thread_list;
     while(curr){
         pthread_join(curr->thread_id, NULL);
@@ -263,13 +289,23 @@ int main(int argc, char *argv[]){
         curr = curr->next;
         free(tmp);
     }
+
+
+#if !USE_AESD_CHAR_DEVICE
     pthread_cancel(ts_thread);
     pthread_join(ts_thread, NULL);
+#endif
+
     close(socketfd);
+
+    
+#if !USE_AESD_CHAR_DEVICE
     if(unlink(DATA_FILE) < 0)
         syslog(LOG_ERR, "Failed to delete %s: %s", DATA_FILE, strerror(errno));
     else
         syslog(LOG_INFO, "Deleted %s", DATA_FILE);
+#endif
+
     closelog();
     return 0;
 }

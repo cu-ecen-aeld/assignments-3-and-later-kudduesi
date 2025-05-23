@@ -2,6 +2,8 @@
 module=aesdchar
 device=aesdchar
 mode="664"
+modpath="/lib/modules/$(uname -r)/extra"
+
 cd `dirname $0`
 set -e
 # Group: since distributions do it differently, look for wheel or use staff
@@ -13,7 +15,7 @@ fi
 
 if [ -e ${module}.ko ]; then
     echo "Loading local built file ${module}.ko"
-    insmod ./$module.ko $* || exit 1
+    insmod $modpath/$module.ko $* || exit 1
 else
     echo "Local file ${module}.ko not found, attempting to modprobe"
     modprobe ${module} || exit 1
