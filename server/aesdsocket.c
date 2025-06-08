@@ -12,17 +12,17 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <pthread.h>
-#include <time.h>   
+#include <time.h>
+#include <sys/ioctl.h>                     
+#include "aesd_ioctl.h"                   
 
 #define PORT 9000
 #define BUF_SIZE 1024
 #define DATA_FILE "/var/tmp/aesdsocketdata"
 
-
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
 #endif
-
 
 #if USE_AESD_CHAR_DEVICE
 #define STORAGE_PATH "/dev/aesdchar"
@@ -44,8 +44,7 @@ int write_client_data(int client_fd){
     ssize_t num_bytes;
     int file_fd;
 
-    
-    file_fd = open(STORAGE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    file_fd = open(STORAGE_PATH, O_RDWR | O_CREAT | O_APPEND, 0644);
     if(file_fd < 0){
         syslog(LOG_ERR, "Failed to open %s: %s", STORAGE_PATH, strerror(errno));
         return -1;
@@ -59,8 +58,7 @@ int write_client_data(int client_fd){
             free(buffer);
             close(file_fd);
             return -1;
-        } 
-        else if(num_bytes == 0){
+        } else if(num_bytes == 0){
             break;
         }
         char *new_buf = realloc(buffer, buf_size + num_bytes);
@@ -73,25 +71,51 @@ int write_client_data(int client_fd){
         buffer = new_buf;
         memcpy(buffer + buf_size, temp, num_bytes);
         buf_size += num_bytes;
-        if(memchr(buffer, '\n', buf_size) != NULL){
-            break;
-        }
+        if(memchr(buffer, '\n', buf_size)) break;
     }
 
-    if(write(file_fd, buffer, buf_size) < 0){
+    if (strncmp(buffer, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0) {
+        struct aesd_seekto seekto;
+        if (sscanf(buffer + strlen("AESDCHAR_IOCSEEKTO:"), "%u,%u",
+                   &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+            if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
+                syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
+            } else {
+                char send_buf[BUF_SIZE];
+                ssize_t rd;
+                while((rd = read(file_fd, send_buf, BUF_SIZE)) > 0) {
+                    ssize_t sent = 0;
+                    while(sent < rd) {
+                        ssize_t s = send(client_fd, send_buf + sent,
+                                         rd - sent, 0);
+                        if (s < 0) {
+                            syslog(LOG_ERR, "send() failed: %s", strerror(errno));
+                            break;
+                        }
+                        sent += s;
+                    }
+                }
+            }
+        } else {
+            syslog(LOG_ERR, "Malformed ioctl cmd: %.*s", (int)buf_size, buffer);
+        }
+        free(buffer);
+        close(file_fd);
+        return 0;
+    }
+
+    if (write(file_fd, buffer, buf_size) < 0) {
         syslog(LOG_ERR, "Write failed: %s", strerror(errno));
         free(buffer);
         close(file_fd);
         return -1;
     }
-
     free(buffer);
     close(file_fd);
     return 0;
 }
 
 int read_client_data(int client_fd){
-    
     int read_fd = open(STORAGE_PATH, O_RDONLY);
     if(read_fd < 0){
         syslog(LOG_ERR, "Failed to open %s for reading: %s", STORAGE_PATH, strerror(errno));
@@ -99,11 +123,12 @@ int read_client_data(int client_fd){
     }
     char send_buf[BUF_SIZE];
     ssize_t bytes_read;
-    while((bytes_read = read(read_fd, send_buf, BUF_SIZE)) > 0){
+    while((bytes_read = read(read_fd, send_buf, BUF_SIZE)) > 0) {
         ssize_t bytes_sent = 0;
-        while(bytes_sent < bytes_read){
-            ssize_t ret = send(client_fd, send_buf + bytes_sent, bytes_read - bytes_sent, 0);
-            if(ret < 0){
+        while(bytes_sent < bytes_read) {
+            ssize_t ret = send(client_fd, send_buf + bytes_sent,
+                               bytes_read - bytes_sent, 0);
+            if(ret < 0) {
                 syslog(LOG_ERR, "send() failed: %s", strerror(errno));
                 close(read_fd);
                 return -1;
@@ -116,10 +141,8 @@ int read_client_data(int client_fd){
 }
 
 int handle_client_data(int client_fd){
-    if(write_client_data(client_fd) < 0)
-        return -1;
-    if(read_client_data(client_fd) < 0)
-        return -1;
+    if(write_client_data(client_fd) < 0) return -1;
+    if(read_client_data(client_fd) < 0) return -1;
     return 0;
 }
 
@@ -140,14 +163,13 @@ void add_thread_info(struct thread_info *node){
 }
 
 void *thread_func(void *arg){
-    struct thread_info *tinfo = (struct thread_info *)arg;
+    struct thread_info *tinfo = arg;
     pthread_mutex_lock(&file_mutex);
     handle_client_data(tinfo->client_fd);
     pthread_mutex_unlock(&file_mutex);
     close(tinfo->client_fd);
     return arg;
 }
-
 
 #if !USE_AESD_CHAR_DEVICE
 void *timestamp_thread(void *arg){
@@ -163,8 +185,7 @@ void *timestamp_thread(void *arg){
         if(file_fd >= 0){
             write(file_fd, ts_buf, strlen(ts_buf));
             close(file_fd);
-        } 
-        else{
+        } else {
             syslog(LOG_ERR, "Failed to open %s for timestamp: %s", DATA_FILE, strerror(errno));
         }
         pthread_mutex_unlock(&file_mutex);
@@ -186,125 +207,64 @@ int main(int argc, char *argv[]){
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sa.sa_flags = 0;
-    if(sigaction(SIGINT, &sa, NULL) < 0){
-        perror("sigaction(SIGINT) failed"); 
-        exit(EXIT_FAILURE);
-    }
-    if(sigaction(SIGTERM, &sa, NULL) < 0){
-        perror("sigaction(SIGTERM) failed"); 
-        exit(EXIT_FAILURE);
-    }
+    if(sigaction(SIGINT, &sa, NULL) < 0){ perror("sigaction(SIGINT) failed"); exit(EXIT_FAILURE);}    
+    if(sigaction(SIGTERM, &sa, NULL) < 0){ perror("sigaction(SIGTERM) failed"); exit(EXIT_FAILURE);}    
 
     openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
-
     socketfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(socketfd < 0){ 
-        syslog(LOG_ERR, "Error creating socket: %s", strerror(errno)); 
-        return -1; 
-    }
+    if(socketfd < 0){ syslog(LOG_ERR, "Error creating socket: %s", strerror(errno)); return -1; }
 
     int yes = 1;
-    if(setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0){
-        syslog(LOG_ERR, "setsockopt failed: %s", strerror(errno));
-        close(socketfd);
-        return -1;
-    }
+    if(setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0){ syslog(LOG_ERR, "setsockopt failed: %s", strerror(errno)); close(socketfd); return -1; }
 
     memset(&server, 0, sizeof(server));
     server.sin_family = AF_INET;
     server.sin_addr.s_addr = INADDR_ANY;
     server.sin_port = htons(PORT);
-    if(bind(socketfd,(struct sockaddr *)&server, sizeof(server)) < 0){ 
-        syslog(LOG_ERR, "Binding failed: %s", strerror(errno)); 
-        close(socketfd); 
-        return -1;
-    }
-    if(listen(socketfd, 5) < 0){ 
-        syslog(LOG_ERR, "Listening failed: %s", strerror(errno)); 
-        close(socketfd); 
-        return -1;
-    }
+    if(bind(socketfd,(struct sockaddr *)&server, sizeof(server)) < 0){ syslog(LOG_ERR, "Binding failed: %s", strerror(errno)); close(socketfd); return -1; }
+    if(listen(socketfd, 5) < 0){ syslog(LOG_ERR, "Listening failed: %s", strerror(errno)); close(socketfd); return -1; }
     if(daemon_mode){
         pid_t pid = fork();
-        if(pid < 0){ 
-            syslog(LOG_ERR, "Fork failed: %s", strerror(errno)); 
-            close(socketfd); 
-            return -1; 
-        }
-        if(pid > 0)
-            exit(EXIT_SUCCESS);
-        if(setsid() < 0){ 
-            syslog(LOG_ERR, "setsid() failed: %s", strerror(errno)); 
-            close(socketfd); 
-            return -1; 
-        }
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
+        if(pid < 0){ syslog(LOG_ERR, "Fork failed: %s", strerror(errno)); close(socketfd); return -1; }
+        if(pid > 0) exit(EXIT_SUCCESS);
+        if(setsid() < 0){ syslog(LOG_ERR, "setsid() failed: %s", strerror(errno)); close(socketfd); return -1; }
+        close(STDIN_FILENO); close(STDOUT_FILENO); close(STDERR_FILENO);
     }
 
-
-#if !USE_AESD_CHAR_DEVICE
+    #if !USE_AESD_CHAR_DEVICE
     pthread_t ts_thread;
-    if(pthread_create(&ts_thread, NULL, timestamp_thread, NULL) != 0){
-        syslog(LOG_ERR, "Failed to create timestamp thread: %s", strerror(errno));
-        close(socketfd);
-        return -1;
-    }
-#endif
+    if(pthread_create(&ts_thread, NULL, timestamp_thread, NULL) != 0){ syslog(LOG_ERR, "Failed to create timestamp thread: %s", strerror(errno)); close(socketfd); return -1; }
+    #endif
 
     while(!stop_server){
         client_len = sizeof(client);
         acceptfd = accept(socketfd,(struct sockaddr *)&client, &client_len);
-        if(acceptfd < 0){
-            if(errno == EINTR && stop_server)
-                break;
-            syslog(LOG_ERR, "Accept failed: %s", strerror(errno));
-            close(socketfd);
-            return -1;
+        if(acceptfd < 0){ if(errno == EINTR && stop_server) break;
+            syslog(LOG_ERR, "Accept failed: %s", strerror(errno)); close(socketfd); return -1;
         }
         syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client.sin_addr));
         struct thread_info *node = malloc(sizeof(struct thread_info));
-        if(!node){ 
-            syslog(LOG_ERR, "Memory allocation failed for thread info"); 
-            close(acceptfd); 
-            continue;
-        }
-        node->client_fd = acceptfd;
-        node->next = NULL;
-        if(pthread_create(&node->thread_id, NULL, thread_func, node) != 0){
-            syslog(LOG_ERR, "pthread_create failed: %s", strerror(errno));
-            close(acceptfd);
-            free(node);
-            continue;
-        }
+        if(!node){ syslog(LOG_ERR, "Memory allocation failed"); close(acceptfd); continue; }
+        node->client_fd = acceptfd; node->next = NULL;
+        if(pthread_create(&node->thread_id, NULL, thread_func, node) != 0){ syslog(LOG_ERR, "pthread_create failed: %s", strerror(errno)); close(acceptfd); free(node); continue; }
         add_thread_info(node);
-        syslog(LOG_INFO, "Spawned thread for connection from %s", inet_ntoa(client.sin_addr));
+        syslog(LOG_INFO, "Spawned thread for %s", inet_ntoa(client.sin_addr));
     }
 
     struct thread_info *curr = thread_list;
-    while(curr){
-        pthread_join(curr->thread_id, NULL);
-        struct thread_info *tmp = curr;
-        curr = curr->next;
-        free(tmp);
-    }
+    while(curr){ pthread_join(curr->thread_id, NULL); struct thread_info *tmp = curr; curr = curr->next; free(tmp); }
 
-
-#if !USE_AESD_CHAR_DEVICE
+    #if !USE_AESD_CHAR_DEVICE
     pthread_cancel(ts_thread);
     pthread_join(ts_thread, NULL);
-#endif
+    #endif
 
     close(socketfd);
 
-    
-#if !USE_AESD_CHAR_DEVICE
-    if(unlink(DATA_FILE) < 0)
-        syslog(LOG_ERR, "Failed to delete %s: %s", DATA_FILE, strerror(errno));
-    else
-        syslog(LOG_INFO, "Deleted %s", DATA_FILE);
-#endif
+    #if !USE_AESD_CHAR_DEVICE
+    if(unlink(DATA_FILE) < 0) syslog(LOG_ERR, "Failed to delete %s: %s", DATA_FILE, strerror(errno));
+    else syslog(LOG_INFO, "Deleted %s", DATA_FILE);
+    #endif
 
     closelog();
     return 0;
