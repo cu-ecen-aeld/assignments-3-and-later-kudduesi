@@ -13,8 +13,8 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
-#include <sys/ioctl.h>                     
-#include "../aesd-char-driver/aesd_ioctl.h"                 
+#include <sys/ioctl.h>                       
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #define PORT 9000
 #define BUF_SIZE 1024
@@ -71,16 +71,19 @@ int write_client_data(int client_fd){
         buffer = new_buf;
         memcpy(buffer + buf_size, temp, num_bytes);
         buf_size += num_bytes;
-        if(memchr(buffer, '\n', buf_size)) break;
-    }
+        if (memchr(buffer, '\n', buf_size) != NULL) {
+            break;
+        }       
 
-    if (strncmp(buffer, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0) {
+
+    if(strncmp(buffer, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0) {
         struct aesd_seekto seekto;
-        if (sscanf(buffer + strlen("AESDCHAR_IOCSEEKTO:"), "%u,%u",
-                   &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
-            if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
+        if(sscanf(buffer + strlen("AESDCHAR_IOCSEEKTO:"), "%u,%u",
+                  &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+            if(ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
                 syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
             } else {
+                
                 char send_buf[BUF_SIZE];
                 ssize_t rd;
                 while((rd = read(file_fd, send_buf, BUF_SIZE)) > 0) {
@@ -88,7 +91,7 @@ int write_client_data(int client_fd){
                     while(sent < rd) {
                         ssize_t s = send(client_fd, send_buf + sent,
                                          rd - sent, 0);
-                        if (s < 0) {
+                        if(s < 0) {
                             syslog(LOG_ERR, "send() failed: %s", strerror(errno));
                             break;
                         }
@@ -101,9 +104,20 @@ int write_client_data(int client_fd){
         }
         free(buffer);
         close(file_fd);
-        return 0;
+        return 1; 
     }
-
+    
+    if(write(file_fd, buffer, buf_size) < 0) {
+        syslog(LOG_ERR, "Write failed: %s", strerror(errno));
+        free(buffer);
+        close(file_fd);
+        return -1;
+    }
+    free(buffer);
+    close(file_fd);
+    return 0;
+}
+    
     if (write(file_fd, buffer, buf_size) < 0) {
         syslog(LOG_ERR, "Write failed: %s", strerror(errno));
         free(buffer);
@@ -141,9 +155,16 @@ int read_client_data(int client_fd){
 }
 
 int handle_client_data(int client_fd){
-    if(write_client_data(client_fd) < 0) return -1;
-    if(read_client_data(client_fd) < 0) return -1;
+    int rc = write_client_data(client_fd);
+    if(rc < 0)
+        return -1;
+    
+    if(rc == 0) {
+        if(read_client_data(client_fd) < 0)
+            return -1;
+    }
     return 0;
+}
 }
 
 struct thread_info{
