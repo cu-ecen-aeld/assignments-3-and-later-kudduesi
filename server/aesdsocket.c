@@ -46,7 +46,6 @@ int write_client_data(int client_fd) {
     ssize_t num_bytes;
     int fd;
 
-    
     while (1) {
         char temp[BUF_SIZE];
         num_bytes = recv(client_fd, temp, BUF_SIZE, 0);
@@ -56,7 +55,6 @@ int write_client_data(int client_fd) {
             return -1;
         }
         if (num_bytes == 0) {
-            
             break;
         }
         char *nb = realloc(buffer, buf_size + num_bytes);
@@ -72,7 +70,6 @@ int write_client_data(int client_fd) {
             break;
     }
 
-    
     fd = open(STORAGE_PATH, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (fd < 0) {
         syslog(LOG_ERR, "open(%s) failed: %s", STORAGE_PATH, strerror(errno));
@@ -80,16 +77,15 @@ int write_client_data(int client_fd) {
         return -1;
     }
 
-    
     if (strncmp(buffer, AESD_IOCTL_CMD, strlen(AESD_IOCTL_CMD)) == 0) {
         struct aesd_seekto seekto;
-        if (sscanf(buffer, AESD_IOCTL_CMD "%u,%u",
+        if (sscanf(buffer,
+                   AESD_IOCTL_CMD "%u,%u",
                    &seekto.write_cmd,
                    &seekto.write_cmd_offset) == 2) {
             if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
                 syslog(LOG_ERR, "ioctl() failed: %s", strerror(errno));
             } else {
-                
                 char send_buf[BUF_SIZE];
                 ssize_t rd;
                 while ((rd = read(fd, send_buf, BUF_SIZE)) > 0) {
@@ -110,13 +106,11 @@ int write_client_data(int client_fd) {
             syslog(LOG_ERR, "Malformed IOCSEEKTO cmd: %.*s",
                    (int)buf_size, buffer);
         }
-
         free(buffer);
         close(fd);
-        return 1;  
+        return 1;
     }
 
-    
     if (write(fd, buffer, buf_size) < 0) {
         syslog(LOG_ERR, "write() failed: %s", strerror(errno));
         free(buffer);
@@ -126,10 +120,8 @@ int write_client_data(int client_fd) {
 
     free(buffer);
     close(fd);
-    return 0; 
+    return 0;
 }
-
-
 
 int read_client_data(int client_fd){
     
@@ -168,9 +160,6 @@ int handle_client_data(int client_fd) {
     }
     return 0;
 }
-
-
-
 
 struct thread_info{
     pthread_t thread_id;
