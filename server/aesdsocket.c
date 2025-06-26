@@ -14,8 +14,8 @@
 #include <pthread.h>
 #include <time.h>
 #include "../aesd-char-driver/aesd_ioctl.h"
-#define AESD_IOCTL_CMD "AESDCHAR_IOCSEEKTO:"
 
+#define AESD_IOCTL_CMD  "AESDCHAR_IOCSEEKTO:"
 #define PORT 9000
 #define BUF_SIZE 1024
 #define DATA_FILE "/var/tmp/aesdsocketdata"
@@ -44,7 +44,7 @@ int write_client_data(int client_fd) {
     char *buffer = NULL;
     size_t buf_size = 0;
     ssize_t num_bytes;
-    int fd;
+    int file_fd;
 
     while (1) {
         char temp[BUF_SIZE];
@@ -70,8 +70,8 @@ int write_client_data(int client_fd) {
             break;
     }
 
-    fd = open(STORAGE_PATH, O_RDWR | O_CREAT | O_APPEND, 0644);
-    if (fd < 0) {
+    file_fd = open(STORAGE_PATH, O_RDWR | O_CREAT | O_APPEND, 0644);
+    if (file_fd < 0) {
         syslog(LOG_ERR, "open(%s) failed: %s", STORAGE_PATH, strerror(errno));
         free(buffer);
         return -1;
@@ -83,12 +83,12 @@ int write_client_data(int client_fd) {
                    AESD_IOCTL_CMD "%u,%u",
                    &seekto.write_cmd,
                    &seekto.write_cmd_offset) == 2) {
-            if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
+            if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
                 syslog(LOG_ERR, "ioctl() failed: %s", strerror(errno));
             } else {
                 char send_buf[BUF_SIZE];
                 ssize_t rd;
-                while ((rd = read(fd, send_buf, BUF_SIZE)) > 0) {
+                while ((rd = read(file_fd, send_buf, BUF_SIZE)) > 0) {
                     ssize_t sent = 0;
                     while (sent < rd) {
                         ssize_t s = send(client_fd,
@@ -107,19 +107,19 @@ int write_client_data(int client_fd) {
                    (int)buf_size, buffer);
         }
         free(buffer);
-        close(fd);
+        close(file_fd);
         return 1;
     }
 
-    if (write(fd, buffer, buf_size) < 0) {
+    if (write(file_fd, buffer, buf_size) < 0) {
         syslog(LOG_ERR, "write() failed: %s", strerror(errno));
         free(buffer);
-        close(fd);
+        close(file_fd);
         return -1;
     }
 
     free(buffer);
-    close(fd);
+    close(file_fd);
     return 0;
 }
 
